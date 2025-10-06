@@ -53,66 +53,7 @@ def main():
         
         result = dashboard.EnableRobot()
         print(f"使能结果: {result}")
-        
-        # 等待使能完成并检查状态
-        print("\\n检查使能状态...")
-        print("程序将持续检查使能状态，直到成功或用户按 Ctrl+C 终止")
-        time.sleep(2)  # 等待使能开始
-        
-        # 持续检查机器人状态直到使能成功
-        enable_success = False
-        check_count = 0
-        
-        while not enable_success:
-            try:
-                check_count += 1
-                feed_data = feedback.feedBackData()
-                
-                if feed_data is not None and len(feed_data) > 0:
-                    robot_mode = feed_data['RobotMode'][0]
-                    
-                    # 每5次检查显示一次状态（避免刷屏）
-                    if check_count % 5 == 1:
-                        print(f"\\n第 {check_count} 次检查 - 机器人模式: {robot_mode}")
-                        
-                        # 显示模式含义
-                        mode_descriptions = {
-                            1: "ROBOT_MODE_INIT (初始化)",
-                            2: "ROBOT_MODE_BRAKE_OPEN (抱闸打开)", 
-                            4: "ROBOT_MODE_DISABLED (失能状态)",
-                            5: "ROBOT_MODE_ENABLE (使能状态)",
-                            7: "ROBOT_MODE_RUNNING (运行状态)",
-                            9: "ROBOT_MODE_ERROR (报警状态)",
-                            10: "ROBOT_MODE_PAUSE (暂停状态)"
-                        }
-                        
-                        if robot_mode in mode_descriptions:
-                            print(f"状态说明: {mode_descriptions[robot_mode]}")
-                    
-                    # 检查是否使能成功 (模式5=ENABLE, 模式7=RUNNING)
-                    if robot_mode in [5, 7]:  # ROBOT_MODE_ENABLE or ROBOT_MODE_RUNNING
-                        enable_success = True
-                        print("\\n✓ 机器人使能成功!")
-                        break
-                        
-                    elif robot_mode == 9:  # ROBOT_MODE_ERROR
-                        print(f"\\n⚠️  机器人处于报警状态 (第{check_count}次检查)")
-                        print("请清除报警后程序将继续检查，或按 Ctrl+C 退出")
-                        
-                    # 显示等待提示
-                    if check_count % 10 == 0:
-                        print(f"已检查 {check_count} 次，继续等待使能成功... (按 Ctrl+C 可终止)")
-                
-                time.sleep(1)  # 每秒检查一次
-                
-            except KeyboardInterrupt:
-                print("\\n\\n用户手动终止使能检查")
-                raise  # 重新抛出异常，让外层处理
-                
-            except Exception as e:
-                if check_count % 5 == 1:  # 只在某些检查时显示错误
-                    print(f"检查状态出错 (第{check_count}次): {e}")
-                time.sleep(1)
+        time.sleep(3)  # 等待使能完成
         
         # 3. 开启拖拽模式
         print("\\n3. 开启拖拽模式...")
