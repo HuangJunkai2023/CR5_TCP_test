@@ -1,41 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-最简示教拖拽模式使用示例
-Simplest Teach Drag Mode Usage Example
-
-使用说明：
-1. 修改IP地址为你的机器人IP
-2. 运行程序
-3. 按提示操作拖拽机器人        # 3. 使能        # 4. 开启拖拽模式
-        print("\n4. 开启拖拽模式...")
-        
-        result = dashboard.StartDrag()
-        print(f"拖拽模式结果: {result}")
-        time.sleep(1)
-        
-        print("\n" + "="*50)
-        print("✓ 拖拽模式已开启!")
-        print("现在可以手动拖拽机器人了!")
-        print("="*50)
-        
-        # 5. 记录关节角度
-        print("\n5. 开始记录关节角度...")rint("\n3. 使能机器人...")
-        
-        result = dashboard.EnableRobot()
-        print(f"使能结果: {result}")
-        time.sleep(3)  # 等待使能完成
-        
-        # 4. 开启拖拽模式
-        print("\n4. 开启拖拽模式...")记录关节角度并保存
-
-Usage Instructions:
-1. Modify IP address to your robot IP
-2. Run the program
-3. Follow prompts to drag the robot
-4. Program will automatically record joint angles and save them
-"""
-
 import time
 import json
 import signal
@@ -183,7 +145,6 @@ def main():
         # 4. 记录关节角度
         print("\n4. 开始记录关节角度...")
         print("\n操作说明:")
-        print("- 拖拽机器人到不同位置")
         print("- 程序每0.1秒记录一次当前位置 (10Hz)")
         print("- 按 Ctrl+C 停止记录并自动保存数据")
         
@@ -200,17 +161,13 @@ def main():
                     if feed_data is not None and len(feed_data) > 0:
                         # 获取关节角度 (QActual)
                         joint_angles = list(feed_data['QActual'][0])
-                        
-                        # 获取末端位置 (ToolVectorActual) 
+                        # 获取末端位置 (ToolVectorActual)
                         tool_position = list(feed_data['ToolVectorActual'][0])
-                        
-                        # 记录数据
+                        # 只保留单独字段
                         position_data = {
                             'index': record_count,
                             'timestamp': time.time() - start_time,
                             'time_str': datetime.now().strftime('%H:%M:%S.%f')[:-3],
-                            'joint_angles': [round(angle, 3) for angle in joint_angles],
-                            'tool_position': [round(pos, 3) for pos in tool_position[:6]],
                             'J1': round(joint_angles[0], 3),
                             'J2': round(joint_angles[1], 3),
                             'J3': round(joint_angles[2], 3),
@@ -224,16 +181,14 @@ def main():
                             'Ry': round(tool_position[4], 3),
                             'Rz': round(tool_position[5], 3)
                         }
-                        
                         recorded_positions.append(position_data)
                         record_count += 1
-                        
                         # 显示当前位置
                         print(f"记录点 {record_count:3d}: "
-                              f"关节[{joint_angles[0]:6.1f}°,{joint_angles[1]:6.1f}°,"
-                              f"{joint_angles[2]:6.1f}°,{joint_angles[3]:6.1f}°,"
-                              f"{joint_angles[4]:6.1f}°,{joint_angles[5]:6.1f}°] "
-                              f"位置[{tool_position[0]:7.1f},{tool_position[1]:7.1f},"
+                              f"关节[{joint_angles[0]:6.1f}°,{joint_angles[1]:6.1f}°,"\
+                              f"{joint_angles[2]:6.1f}°,{joint_angles[3]:6.1f}°,"\
+                              f"{joint_angles[4]:6.1f}°,{joint_angles[5]:6.1f}°] "\
+                              f"位置[{tool_position[0]:7.1f},{tool_position[1]:7.1f},"\
                               f"{tool_position[2]:7.1f}]")
                     
                     time.sleep(0.1)  # 每0.1秒记录一次 (10Hz)
