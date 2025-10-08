@@ -57,7 +57,7 @@ class RobotUI(object):
 
         self.label_ip = Label(self.frame_robot, text="IP Address:")
         self.label_ip.place(rely=0.2, x=10)
-        ip_port = StringVar(self.root, value="8.209.98.146")
+        ip_port = StringVar(self.root, value="192.168.5.1")
         self.entry_ip = Entry(self.frame_robot, width=12, textvariable=ip_port)
         self.entry_ip.place(rely=0.2, x=90)
 
