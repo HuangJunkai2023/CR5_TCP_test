@@ -202,6 +202,92 @@ class D415CameraRecorder:
         except Exception as e:
             print(f"捕获帧数据失败: {e}")
             return None
+        
+    def capture_frame_with_data(self, frame_index, timestamp):
+        """
+        捕获一帧数据，同时返回图像数据和保存路径
+        
+        Args:
+            frame_index (int): 帧索引
+            timestamp (float): 时间戳
+            
+        Returns:
+            dict: 包含文件路径、相机数据和图像numpy数组的字典，失败返回None
+        """
+        if not self.pipeline or not self.is_recording:
+            return None
+            
+        try:
+            # 等待帧数据
+            frames = self.pipeline.wait_for_frames(timeout_ms=1000)
+            
+            # 对齐帧
+            aligned_frames = self.align.process(frames)
+            
+            # 获取对齐后的深度帧和彩色帧
+            depth_frame = aligned_frames.get_depth_frame()
+            color_frame = aligned_frames.get_color_frame()
+            
+            if not depth_frame or not color_frame:
+                return None
+            
+            # 转换为numpy数组
+            depth_image = np.asanyarray(depth_frame.get_data())
+            color_image = np.asanyarray(color_frame.get_data())
+            
+            # 生成文件名
+            frame_filename = f"frame_{frame_index:06d}_{timestamp:.3f}"
+            depth_path = os.path.join(self.depth_folder, f"{frame_filename}.png")
+            color_path = os.path.join(self.color_folder, f"{frame_filename}.jpg")
+            
+            # 保存图像
+            cv2.imwrite(depth_path, depth_image)
+            cv2.imwrite(color_path, color_image)
+            
+            # 计算深度统计信息
+            valid_depth = depth_image[depth_image > 0]
+            depth_stats = {
+                'min_depth': float(np.min(valid_depth)) * self.depth_scale if len(valid_depth) > 0 else 0,
+                'max_depth': float(np.max(valid_depth)) * self.depth_scale if len(valid_depth) > 0 else 0,
+                'mean_depth': float(np.mean(valid_depth)) * self.depth_scale if len(valid_depth) > 0 else 0,
+                'valid_pixels': int(len(valid_depth))
+            }
+            
+            self.frame_count += 1
+            
+            return {
+                'frame_index': frame_index,
+                'timestamp': timestamp,
+                'depth_image_path': os.path.relpath(depth_path, self.base_folder),
+                'color_image_path': os.path.relpath(color_path, self.base_folder),
+                'depth_stats': depth_stats,
+                'camera_intrinsics': {
+                    'color': {
+                        'width': self.color_intrinsics.width,
+                        'height': self.color_intrinsics.height,
+                        'fx': self.color_intrinsics.fx,
+                        'fy': self.color_intrinsics.fy,
+                        'ppx': self.color_intrinsics.ppx,
+                        'ppy': self.color_intrinsics.ppy
+                    },
+                    'depth': {
+                        'width': self.depth_intrinsics.width,
+                        'height': self.depth_intrinsics.height,
+                        'fx': self.depth_intrinsics.fx,
+                        'fy': self.depth_intrinsics.fy,
+                        'ppx': self.depth_intrinsics.ppx,
+                        'ppy': self.depth_intrinsics.ppy
+                    },
+                    'depth_scale': self.depth_scale
+                },
+                # 新增：直接返回图像数据用于LeRobot格式
+                'color_image_data': color_image.copy(),
+                'depth_image_data': depth_image.copy()
+            }
+            
+        except Exception as e:
+            print(f"捕获帧数据失败: {e}")
+            return None
     
     def start_recording(self, base_path):
         """开始录制"""

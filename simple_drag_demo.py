@@ -1,10 +1,11 @@
 import time
 import signal
 import sys
+import numpy as np
 from datetime import datetime
 from dobot_api import DobotApiDashboard, DobotApiFeedBack
 from camera_recorder import D415CameraRecorder
-from lerobot_dataset_saver import LeRobotDatasetSaver
+from lerobot_dataset_saver import create_lerobot_saver
 
 # 配置参数 / Configuration
 ROBOT_IP = "192.168.5.1"  # 请修改为你的机器人IP / Please modify to your robot IP
@@ -44,6 +45,17 @@ def save_data_and_exit(signum=None, frame=None):
             lerobot_saver.save_episode()  # 保存当前episode
             lerobot_dataset_path = lerobot_saver.finalize_dataset()
             print(f"✓ LeRobot格式数据已保存到: {lerobot_dataset_path}")
+            
+            # 创建数据集README
+            readme_path = lerobot_saver.create_dataset_card()
+            print(f"✓ 数据集README已创建: {readme_path}")
+            
+            # 验证数据集格式
+            if lerobot_saver.validate_dataset():
+                print("✓ 数据集格式验证通过")
+            else:
+                print("⚠ 数据集格式验证失败")
+            
             print("✓ 数据保存完成")
             
         except Exception as e:
@@ -86,13 +98,7 @@ def main():
         # 1. 初始化LeRobot数据集保存器
         print("\n1. 初始化LeRobot数据集保存器...")
         
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        lerobot_saver = LeRobotDatasetSaver(
-            repo_id=f"dobot/cr5_teach_demo_{timestamp}",
-            fps=10,
-            robot_type="dobot_cr5"
-        )
-        lerobot_saver.start_episode("teach_drag")
+        lerobot_saver = create_lerobot_saver(task_name="teach_drag", fps=10)
         print("✓ LeRobot数据集保存器初始化成功!")
         
         # 2. 初始化深度相机
@@ -192,27 +198,44 @@ def main():
                         camera_available = False
                         
                         if camera_recorder and camera_recorder.is_recording:
-                            camera_frame_data = camera_recorder.capture_frame(record_count, current_timestamp)
+                            # 使用新的方法同时获取图像数据和保存路径
+                            camera_frame_data = camera_recorder.capture_frame_with_data(record_count, current_timestamp)
                             if camera_frame_data:
                                 camera_available = True
                                 
-                                # 为LeRobot格式准备相机数据
-                                # 注意：这里需要从保存的图像文件中重新读取，或者直接使用numpy数组
-                                # 简化处理：创建模拟数据，实际使用中应该传递实际的图像数组
-                                import numpy as np
-                                lerobot_camera_data = {
-                                    "color_image": np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8),
-                                    "depth_image": np.random.randint(0, 1000, (480, 640), dtype=np.uint16),
-                                }
+                                # 获取实际的相机图像数据
+                                color_image = camera_frame_data.get('color_image_data')
+                                depth_image = camera_frame_data.get('depth_image_data')
+                                
+                                if color_image is not None and depth_image is not None:
+                                    # 确保深度图像是正确的格式
+                                    if len(depth_image.shape) == 2:
+                                        # 将单通道深度图转换为3通道以适配LeRobot格式
+                                        depth_image_3ch = np.stack([depth_image] * 3, axis=-1)
+                                    else:
+                                        depth_image_3ch = depth_image
+                                    
+                                    lerobot_camera_data = {
+                                        "color_image": color_image,
+                                        "depth_image": depth_image_3ch,
+                                    }
+                                else:
+                                    # 备用：使用空白图像
+                                    lerobot_camera_data = {
+                                        "color_image": np.zeros((480, 640, 3), dtype=np.uint8),
+                                        "depth_image": np.zeros((480, 640, 3), dtype=np.uint8),
+                                    }
+                            else:
+                                # 如果capture_frame_with_data失败，回退到原始方法
+                                camera_recorder.capture_frame(record_count, current_timestamp)
                         
                         # 添加到LeRobot数据集
                         if lerobot_saver:
                             # 确保相机数据不为None
                             if lerobot_camera_data is None:
-                                import numpy as np
                                 lerobot_camera_data = {
                                     "color_image": np.zeros((480, 640, 3), dtype=np.uint8),
-                                    "depth_image": np.zeros((480, 640), dtype=np.uint16),
+                                    "depth_image": np.zeros((480, 640, 3), dtype=np.uint8),
                                 }
                             lerobot_saver.add_frame(position_data, lerobot_camera_data)
                         
