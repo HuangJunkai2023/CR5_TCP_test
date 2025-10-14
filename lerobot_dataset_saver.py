@@ -65,8 +65,8 @@ class LeRobotDatasetSaver:
             },
             "action": {
                 "dtype": "float32",
-                "shape": (6,),
-                "names": ["J1", "J2", "J3", "J4", "J5", "J6"],
+                "shape": (7,),  # 6个关节速度(rad/s) + 1个夹爪位置
+                "names": ["J1_vel", "J2_vel", "J3_vel", "J4_vel", "J5_vel", "J6_vel", "gripper"],
             },
             "observation.images.camera_color": {
                 "dtype": "video",
@@ -181,14 +181,21 @@ class LeRobotDatasetSaver:
         """添加一帧数据"""
         frame_index = len(self.current_episode_data)
         
-        # 准备标准LeRobot格式的数据
-        observation_state = [float(robot_data['J1']), float(robot_data['J2']), float(robot_data['J3']),
-                           float(robot_data['J4']), float(robot_data['J5']), float(robot_data['J6'])]
+        # 准备标准LeRobot格式的数据（角度制转弧度制 - pi0要求）
+        observation_state = [
+            np.deg2rad(float(robot_data['J1'])),
+            np.deg2rad(float(robot_data['J2'])),
+            np.deg2rad(float(robot_data['J3'])),
+            np.deg2rad(float(robot_data['J4'])),
+            np.deg2rad(float(robot_data['J5'])),
+            np.deg2rad(float(robot_data['J6']))
+        ]
         
         observation_cartesian = [float(robot_data['X']), float(robot_data['Y']), float(robot_data['Z']),
                                float(robot_data['Rx']), float(robot_data['Ry']), float(robot_data['Rz'])]
         
-        action = observation_state.copy()  # 使用当前状态作为动作
+        # 动作将在episode结束时计算速度，这里先占位
+        action = None
         
         # 准备帧数据（符合LeRobot标准格式）
         frame_data = {
@@ -298,11 +305,34 @@ class LeRobotDatasetSaver:
         self.video_writers["depth"].write(empty_depth)
         self.video_frame_counts["depth"] += 1
     
+    def _compute_joint_velocities(self):
+        """计算关节速度动作（pi0要求）"""
+        dt = 1.0 / self.fps
+        
+        for i in range(len(self.current_episode_data) - 1):
+            current_state = self.current_episode_data[i]["observation.state"]
+            next_state = self.current_episode_data[i + 1]["observation.state"]
+            
+            # 计算关节速度（弧度/秒）
+            velocities = [(next_state[j] - current_state[j]) / dt for j in range(6)]
+            
+            # 添加夹爪位置（暂时固定为0，后续可根据实际情况修改）
+            action = velocities + [0.0]
+            
+            # 更新动作
+            self.current_episode_data[i]["action"] = action
+        
+        # 最后一帧速度设为0
+        self.current_episode_data[-1]["action"] = [0.0] * 7
+    
     def save_episode(self):
         """保存当前episode"""
         if not self.current_episode_data:
             print("⚠ 当前episode没有数据，跳过保存")
             return
+        
+        # 计算关节速度（pi0要求）
+        self._compute_joint_velocities()
         
         # 设置最后一帧的done标志
         if self.current_episode_data:

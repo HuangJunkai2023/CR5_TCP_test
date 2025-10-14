@@ -5,7 +5,10 @@ import numpy as np
 from datetime import datetime
 from dobot_api import DobotApiDashboard, DobotApiFeedBack
 from camera_recorder import D415CameraRecorder
-from lerobot_dataset_saver import create_lerobot_saver
+from lerobot_dataset_saver import LeRobotDatasetSaver
+
+# 注意：使用 LeRobotDatasetSaver 类而不是 create_lerobot_saver
+# 因为我们已经修改了 lerobot_dataset_saver.py 支持 pi0 格式
 
 # 配置参数 / Configuration
 ROBOT_IP = "192.168.5.1"  # 请修改为你的机器人IP / Please modify to your robot IP
@@ -39,12 +42,12 @@ def save_data_and_exit(signum=None, frame=None):
         except Exception as e:
             print(f"⚠ 停止相机录制时出错: {e}")
     
-    # 保存LeRobot格式数据
+    # 保存LeRobot格式数据（pi0 格式）
     if lerobot_saver:
         try:
             lerobot_saver.save_episode()  # 保存当前episode
             lerobot_dataset_path = lerobot_saver.finalize_dataset()
-            print(f"✓ LeRobot格式数据已保存到: {lerobot_dataset_path}")
+            print(f"✓ pi0 格式数据已保存到: {lerobot_dataset_path}")
             
             # 创建数据集README
             readme_path = lerobot_saver.create_dataset_card()
@@ -56,7 +59,26 @@ def save_data_and_exit(signum=None, frame=None):
             else:
                 print("⚠ 数据集格式验证失败")
             
-            print("✓ 数据保存完成")
+            print("\n" + "="*60)
+            print("✓ 数据保存完成！")
+            print("="*60)
+            print("\n✨ pi0 格式特性:")
+            print("  ✓ 关节角度已转换为弧度制")
+            print("  ✓ 动作已计算为关节速度（rad/s）")
+            print("  ✓ 符合 pi0 训练格式")
+            print("\n📊 数据统计:")
+            print(f"  Episodes: {lerobot_saver.current_episode_index}")
+            print(f"  总帧数: {lerobot_saver.total_frames}")
+            print(f"  采集频率: {lerobot_saver.fps} Hz")
+            print("\n🚀 下一步:")
+            print("  如需采集更多数据，再次运行此程序")
+            print("  如需开始微调，请运行:")
+            print(f"    cd /home/huang/learn_arm_robot/openpi")
+            print(f"    python scripts/train_pytorch.py \\")
+            print(f"      --pretrained-checkpoint pi05_droid \\")
+            print(f"      --dataset-repo-id {lerobot_dataset_path} \\")
+            print(f"      --use-lora --lora-rank 8")
+            print("="*60)
             
         except Exception as e:
             print(f"⚠ 保存LeRobot数据时出错: {e}")
@@ -95,11 +117,26 @@ def main():
     signal.signal(signal.SIGTERM, save_data_and_exit)  # 终止信号
     
     try:
-        # 1. 初始化LeRobot数据集保存器
-        print("\n1. 初始化LeRobot数据集保存器...")
+        # 1. 初始化LeRobot数据集保存器（pi0 格式）
+        print("\n1. 初始化LeRobot数据集保存器（pi0 格式）...")
         
-        lerobot_saver = create_lerobot_saver(task_name="teach_drag", fps=10)
-        print("✓ LeRobot数据集保存器初始化成功!")
+        # 创建时间戳
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        repo_id = f"cr5_drag_teach_{timestamp}"
+        
+        # 使用修改后的保存器（已支持 pi0 格式）
+        lerobot_saver = LeRobotDatasetSaver(
+            repo_id=repo_id,
+            fps=10,
+            robot_type="dobot_cr5"
+        )
+        
+        # 开始第一个 episode
+        lerobot_saver.start_episode(task_name="teach_drag")
+        
+        print("✓ LeRobot数据集保存器初始化成功（pi0 格式）!")
+        print(f"  数据集: {repo_id}")
+        print(f"  特点: 自动转换角度→弧度，自动计算关节速度")
         
         # 2. 初始化深度相机
         print("\n2. 初始化深度相机...")
