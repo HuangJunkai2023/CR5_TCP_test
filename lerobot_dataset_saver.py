@@ -194,8 +194,21 @@ class LeRobotDatasetSaver:
         observation_cartesian = [float(robot_data['X']), float(robot_data['Y']), float(robot_data['Z']),
                                float(robot_data['Rx']), float(robot_data['Ry']), float(robot_data['Rz'])]
         
-        # 动作将在episode结束时计算速度，这里先占位
-        action = None
+        # 使用机器人实际速度（如果可用），否则将在episode结束时计算
+        if all(key in robot_data for key in ['J1_vel', 'J2_vel', 'J3_vel', 'J4_vel', 'J5_vel', 'J6_vel']):
+            # 使用实际速度（需要从角度/秒转换为弧度/秒）
+            action = [
+                np.deg2rad(float(robot_data['J1_vel'])),
+                np.deg2rad(float(robot_data['J2_vel'])),
+                np.deg2rad(float(robot_data['J3_vel'])),
+                np.deg2rad(float(robot_data['J4_vel'])),
+                np.deg2rad(float(robot_data['J5_vel'])),
+                np.deg2rad(float(robot_data['J6_vel'])),
+                0.0  # 夹爪位置（暂时固定为0）
+            ]
+        else:
+            # 旧方法：将在episode结束时计算速度
+            action = None
         
         # 准备帧数据（符合LeRobot标准格式）
         frame_data = {
@@ -306,24 +319,19 @@ class LeRobotDatasetSaver:
         self.video_frame_counts["depth"] += 1
     
     def _compute_joint_velocities(self):
-        """计算关节速度动作（pi0要求）"""
-        dt = 1.0 / self.fps
+        """检查并填充缺失的动作数据"""
+        missing_count = 0
         
-        for i in range(len(self.current_episode_data) - 1):
-            current_state = self.current_episode_data[i]["observation.state"]
-            next_state = self.current_episode_data[i + 1]["observation.state"]
-            
-            # 计算关节速度（弧度/秒）
-            velocities = [(next_state[j] - current_state[j]) / dt for j in range(6)]
-            
-            # 添加夹爪位置（暂时固定为0，后续可根据实际情况修改）
-            action = velocities + [0.0]
-            
-            # 更新动作
-            self.current_episode_data[i]["action"] = action
+        for i in range(len(self.current_episode_data)):
+            # 如果动作数据为空，填充为0（不应该发生）
+            if self.current_episode_data[i]["action"] is None:
+                missing_count += 1
+                self.current_episode_data[i]["action"] = [0.0] * 7
         
-        # 最后一帧速度设为0
-        self.current_episode_data[-1]["action"] = [0.0] * 7
+        if missing_count > 0:
+            print(f"  ⚠ 警告: 有 {missing_count} 帧缺少速度数据，已填充为0")
+        else:
+            print(f"  ✓ 使用机器人实际速度数据（从TCP直接获取）")
     
     def save_episode(self):
         """保存当前episode"""
@@ -485,8 +493,37 @@ class LeRobotDatasetSaver:
             data_dir = self.root_path / "data" / "chunk-000"
             data_dir.mkdir(parents=True, exist_ok=True)
             
+            # 将列表类型的数据展开为单独的列
+            processed_frames = []
+            for frame in self.frames_data:
+                processed_frame = {}
+                
+                for key, value in frame.items():
+                    if isinstance(value, list):
+                        # 将列表展开为单独的列
+                        if key == "observation.state":
+                            for i, joint_name in enumerate(["J1", "J2", "J3", "J4", "J5", "J6"]):
+                                processed_frame[f"observation.state.{joint_name}"] = value[i]
+                        elif key == "observation.cartesian_position":
+                            for i, axis_name in enumerate(["X", "Y", "Z", "Rx", "Ry", "Rz"]):
+                                processed_frame[f"observation.cartesian_position.{axis_name}"] = value[i]
+                        elif key == "action":
+                            for i, action_name in enumerate(["J1_vel", "J2_vel", "J3_vel", "J4_vel", "J5_vel", "J6_vel", "gripper"]):
+                                processed_frame[f"action.{action_name}"] = value[i]
+                        else:
+                            # 其他列表类型数据，转为JSON字符串
+                            processed_frame[key] = json.dumps(value)
+                    elif isinstance(value, dict):
+                        # 字典类型数据转为JSON字符串（如视频引用）
+                        processed_frame[key] = json.dumps(value)
+                    else:
+                        # 标量数据直接保存
+                        processed_frame[key] = value
+                
+                processed_frames.append(processed_frame)
+            
             # 转换为DataFrame
-            df = pd.DataFrame(self.frames_data)
+            df = pd.DataFrame(processed_frames)
             
             # 确保数据类型正确
             df["episode_index"] = df["episode_index"].astype('int64')
@@ -495,17 +532,30 @@ class LeRobotDatasetSaver:
             df["next.done"] = df["next.done"].astype('bool')
             df["index"] = df["index"].astype('int64')
             
+            # 确保所有关节角度和速度列都是float32
+            joint_cols = [f"observation.state.{j}" for j in ["J1", "J2", "J3", "J4", "J5", "J6"]]
+            cartesian_cols = [f"observation.cartesian_position.{a}" for a in ["X", "Y", "Z", "Rx", "Ry", "Rz"]]
+            action_cols = [f"action.{a}" for a in ["J1_vel", "J2_vel", "J3_vel", "J4_vel", "J5_vel", "J6_vel", "gripper"]]
+            
+            for col in joint_cols + cartesian_cols + action_cols:
+                if col in df.columns:
+                    df[col] = df[col].astype('float32')
+            
             # 保存为Parquet格式（标准LeRobot格式）
             parquet_path = data_dir / "file-000000.parquet"
             df.to_parquet(parquet_path, index=False)
             
             print(f"✓ 帧数据已保存为Parquet格式: {parquet_path}")
+            print(f"  包含列: {list(df.columns)}")
+            print(f"  数据形状: {df.shape}")
             
         except Exception as e:
             print(f"⚠ Parquet保存失败: {e}")
+            import traceback
+            traceback.print_exc()
             # 紧急保存原始数据
             with open(self.root_path / "frames_data_raw.json", 'w', encoding='utf-8') as f:
-                json.dump(self.frames_data, f, indent=2, ensure_ascii=False)
+                json.dump(self.frames_data, f, indent=2, ensure_ascii=False, default=str)
             print(f"✓ 原始数据已保存: frames_data_raw.json")
 
     def validate_dataset(self) -> bool:
