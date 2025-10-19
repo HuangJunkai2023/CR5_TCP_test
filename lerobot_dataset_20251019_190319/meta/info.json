@@ -1,0 +1,109 @@
+{
+  "codebase_version": "v3.0",
+  "robot_type": "dobot_cr5",
+  "total_episodes": 1,
+  "total_frames": 221,
+  "fps": 10,
+  "chunks_size": 100,
+  "data_path": "data/chunk-{chunk_index:03d}/file-{file_index:06d}.parquet",
+  "video_path": "videos/{video_key}/episode_{episode_index:06d}.mp4",
+  "features": {
+    "observation.state": {
+      "dtype": "float32",
+      "shape": [
+        6
+      ],
+      "names": [
+        "J1",
+        "J2",
+        "J3",
+        "J4",
+        "J5",
+        "J6"
+      ]
+    },
+    "observation.cartesian_position": {
+      "dtype": "float32",
+      "shape": [
+        6
+      ],
+      "names": [
+        "X",
+        "Y",
+        "Z",
+        "Rx",
+        "Ry",
+        "Rz"
+      ]
+    },
+    "action": {
+      "dtype": "float32",
+      "shape": [
+        7
+      ],
+      "names": [
+        "J1_vel",
+        "J2_vel",
+        "J3_vel",
+        "J4_vel",
+        "J5_vel",
+        "J6_vel",
+        "gripper"
+      ]
+    },
+    "observation.images.camera_color": {
+      "dtype": "video",
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "names": [
+        "height",
+        "width",
+        "channels"
+      ],
+      "info": {}
+    },
+    "observation.images.camera_depth": {
+      "dtype": "video",
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "names": [
+        "height",
+        "width",
+        "channels"
+      ],
+      "info": {}
+    },
+    "episode_index": {
+      "dtype": "int64",
+      "shape": [],
+      "names": null
+    },
+    "frame_index": {
+      "dtype": "int64",
+      "shape": [],
+      "names": null
+    },
+    "timestamp": {
+      "dtype": "float32",
+      "shape": [],
+      "names": null
+    },
+    "next.done": {
+      "dtype": "bool",
+      "shape": [],
+      "names": null
+    },
+    "index": {
+      "dtype": "int64",
+      "shape": [],
+      "names": null
+    }
+  },
+  "video": true
+}
