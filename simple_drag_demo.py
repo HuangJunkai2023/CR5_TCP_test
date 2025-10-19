@@ -3,9 +3,12 @@ import signal
 import sys
 import numpy as np
 from datetime import datetime
+import threading
+import msvcrt  # Windows 键盘输入
 from dobot_api import DobotApiDashboard, DobotApiFeedBack
 from camera_recorder import D415CameraRecorder
 from lerobot_dataset_saver import LeRobotDatasetSaver
+from gripper import Robotiq2F85
 
 # 注意：使用 LeRobotDatasetSaver 类而不是 create_lerobot_saver
 # 因为我们已经修改了 lerobot_dataset_saver.py 支持 pi0 格式
@@ -14,17 +17,26 @@ from lerobot_dataset_saver import LeRobotDatasetSaver
 ROBOT_IP = "192.168.5.1"  # 请修改为你的机器人IP / Please modify to your robot IP
 DASHBOARD_PORT = 29999
 FEEDBACK_PORT = 30004
+GRIPPER_PORT = "COM5"  # 夹爪串口号
+GRIPPER_THRESHOLD_MM = 50.0  # 夹爪开口宽度阈值（毫米），<= 50mm为闭合(1)，> 50mm为打开(0)
 
 # 全局变量用于信号处理
 dashboard = None
 feedback = None
 camera_recorder = None
+gripper = None  # 夹爪控制器
+gripper_state = 0.0  # 当前夹爪状态: 0.0=打开, 1.0=闭合
+gripper_lock = threading.Lock()  # 线程锁,保护gripper_state
 data_saved = False  # 防止重复保存的标志
 lerobot_saver = None  # LeRobot格式保存器
+keyboard_thread_running = False  # 键盘线程运行标志
 
 def save_data_and_exit(signum=None, frame=None):
     """信号处理函数：保存数据并退出"""
-    global dashboard, feedback, camera_recorder, data_saved, lerobot_saver
+    global dashboard, feedback, camera_recorder, data_saved, lerobot_saver, keyboard_thread_running
+    
+    # 停止键盘监听线程
+    keyboard_thread_running = False
     
     # 防止重复保存
     if data_saved:
@@ -121,12 +133,90 @@ def save_data_and_exit(signum=None, frame=None):
     except Exception as e:
         print(f"清理相机资源时出错: {e}")
     
+    # 清理夹爪连接
+    try:
+        if gripper:
+            gripper.close()
+            print("✓ 夹爪连接已关闭")
+    except Exception as e:
+        print(f"清理夹爪连接时出错: {e}")
+    
     print("程序已安全退出")
     sys.exit(0)
 
+def keyboard_listener():
+    """键盘监听线程：监听夹爪控制按键"""
+    global gripper, gripper_state, gripper_lock, keyboard_thread_running
+    
+    print("\n" + "="*60)
+    print("⌨️  键盘控制说明:")
+    print("  按 'O' 键 → 打开夹爪 (Open)")
+    print("  按 'C' 键 → 关闭夹爪 (Close)")
+    print("  按 'Ctrl+C' → 结束录制并保存数据")
+    print("="*60 + "\n")
+    
+    keyboard_thread_running = True
+    
+    while keyboard_thread_running:
+        try:
+            if msvcrt.kbhit():  # 检查是否有按键
+                # 读取原始字节,避免解码问题
+                key_bytes = msvcrt.getch()
+                
+                try:
+                    # 尝试解码为字符
+                    key = key_bytes.decode('utf-8').upper()
+                    
+                    if key == 'O':  # 打开夹爪
+                        if gripper:
+                            try:
+                                print(f"\n🔓 [按键 'O'] 正在打开夹爪...")
+                                # 对调：打开夹爪实际调用 close_gripper
+                                gripper.close_gripper(speed=100, force=170)
+                                with gripper_lock:
+                                    gripper_state = 0.0
+                                print("✓ 夹爪打开命令已发送")
+                            except Exception as e:
+                                print(f"⚠ 打开夹爪失败: {e}")
+                                import traceback
+                                traceback.print_exc()
+                        else:
+                            print("⚠ 夹爪未初始化")
+                    
+                    elif key == 'C':  # 关闭夹爪
+                        if gripper:
+                            try:
+                                print(f"\n🔒 [按键 'C'] 正在关闭夹爪...")
+                                # 对调：关闭夹爪实际调用 open_gripper
+                                gripper.open_gripper(speed=255, force=200, wait=0.1)
+                                with gripper_lock:
+                                    gripper_state = 1.0
+                                print("✓ 夹爪关闭命令已发送")
+                            except Exception as e:
+                                print(f"⚠ 关闭夹爪失败: {e}")
+                                import traceback
+                                traceback.print_exc()
+                        else:
+                            print("⚠ 夹爪未初始化")
+                    else:
+                        # 调试:显示按下的键
+                        print(f"[Debug] 按下未映射的键: '{key}' (ASCII: {ord(key)})")
+                
+                except UnicodeDecodeError:
+                    # 特殊键(方向键等)无法解码,忽略
+                    pass
+            
+            time.sleep(0.05)  # 短暂休眠，避免CPU占用过高
+            
+        except Exception as e:
+            # 打印其他异常,便于调试
+            print(f"[键盘监听异常] {e}")
+            import traceback
+            traceback.print_exc()
+
 def main():
     """主程序 / Main program"""
-    global dashboard, feedback, camera_recorder, lerobot_saver
+    global dashboard, feedback, camera_recorder, lerobot_saver, gripper, gripper_state, gripper_lock
     
     # 注册信号处理器
     signal.signal(signal.SIGINT, save_data_and_exit)  # Ctrl+C
@@ -152,10 +242,34 @@ def main():
         
         print("✓ LeRobot数据集保存器初始化成功（pi0 格式）!")
         print(f"  数据集: {repo_id}")
-        print(f"  特点: 自动转换角度→弧度，自动计算关节速度")
+        print(f"  特点: 自动转换角度→弧度，使用TCP实际速度")
         
-        # 2. 初始化深度相机
-        print("\n2. 初始化深度相机...")
+        # 2. 初始化Robotiq 2F-85夹爪
+        print("\n2. 初始化Robotiq 2F-85夹爪...")
+        
+        try:
+            gripper = Robotiq2F85(port=GRIPPER_PORT, debug=False)
+            gripper.activate()
+            print("✓ 夹爪初始化成功!")
+            print(f"  默认状态: 打开 (gripper_state = 0.0)")
+            print(f"  控制方式: 按键控制 (O=打开, C=关闭)")
+            
+            # 初始化夹爪状态为打开
+            with gripper_lock:
+                gripper_state = 0.0
+            
+            # 启动键盘监听线程
+            keyboard_thread = threading.Thread(target=keyboard_listener, daemon=True)
+            keyboard_thread.start()
+            print("✓ 键盘监听线程已启动")
+            
+        except Exception as e:
+            print(f"⚠ 夹爪初始化失败: {e}")
+            print("  将不记录夹爪数据（action.gripper 将为 0）")
+            gripper = None
+        
+        # 3. 初始化深度相机
+        print("\n3. 初始化深度相机...")
         
         camera_recorder = D415CameraRecorder(width=640, height=480, fps=30)
         camera_available = camera_recorder.start_recording(".")
@@ -166,8 +280,8 @@ def main():
             print("⚠ 深度相机初始化失败，将只记录机器人数据")
             camera_recorder = None
         
-        # 3. 连接机器人
-        print("\n3. 连接机器人...")
+        # 4. 连接机器人
+        print("\n4. 连接机器人...")
         
         dashboard = DobotApiDashboard(ROBOT_IP, DASHBOARD_PORT)
         feedback = DobotApiFeedBack(ROBOT_IP, FEEDBACK_PORT)
@@ -229,6 +343,10 @@ def main():
                         # 获取关节速度 (QDActual) - 直接从机器人获取！
                         joint_velocities = list(feed_data['QDActual'][0])
                         
+                        # 获取夹爪状态（从全局变量读取，由键盘线程控制）
+                        with gripper_lock:
+                            current_gripper_state = gripper_state
+                        
                         # 机器人位置数据
                         position_data = {
                             'index': record_count,
@@ -252,7 +370,9 @@ def main():
                             'J3_vel': round(joint_velocities[2], 6),
                             'J4_vel': round(joint_velocities[3], 6),
                             'J5_vel': round(joint_velocities[4], 6),
-                            'J6_vel': round(joint_velocities[5], 6)
+                            'J6_vel': round(joint_velocities[5], 6),
+                            # 添加夹爪状态（0=打开，1=闭合）- 由键盘控制
+                            'gripper_state': current_gripper_state
                         }
                         
                         # 记录相机数据（如果可用）
@@ -305,6 +425,7 @@ def main():
                         
                         # 显示当前位置和速度
                         camera_status = f" | 相机: {'✓' if camera_available else '✗'}" if camera_recorder else ""
+                        gripper_status = f" | 夹爪: {'🔒 闭合' if current_gripper_state == 1.0 else '🔓 打开'}" if gripper else ""
                         
                         # 计算速度范数（判断是否在运动）
                         vel_norm = sum(abs(v) for v in joint_velocities)
@@ -315,7 +436,7 @@ def main():
                               f"{joint_angles[2]:6.1f}°,{joint_angles[3]:6.1f}°,"\
                               f"{joint_angles[4]:6.1f}°,{joint_angles[5]:6.1f}°] "
                               f"速度[{joint_velocities[0]:5.1f}°/s,{joint_velocities[1]:5.1f}°/s] "
-                              f"{camera_status}")
+                              f"{camera_status}{gripper_status}")
                     
                     time.sleep(0.1)  # 每0.1秒记录一次 (10Hz)
                     

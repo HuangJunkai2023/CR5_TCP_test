@@ -197,6 +197,9 @@ class LeRobotDatasetSaver:
         # 使用机器人实际速度（如果可用），否则将在episode结束时计算
         if all(key in robot_data for key in ['J1_vel', 'J2_vel', 'J3_vel', 'J4_vel', 'J5_vel', 'J6_vel']):
             # 使用实际速度（需要从角度/秒转换为弧度/秒）
+            # 夹爪状态：从 robot_data 获取（0=打开，1=闭合）
+            gripper_state = float(robot_data.get('gripper_state', 0.0))
+            
             action = [
                 np.deg2rad(float(robot_data['J1_vel'])),
                 np.deg2rad(float(robot_data['J2_vel'])),
@@ -204,7 +207,7 @@ class LeRobotDatasetSaver:
                 np.deg2rad(float(robot_data['J4_vel'])),
                 np.deg2rad(float(robot_data['J5_vel'])),
                 np.deg2rad(float(robot_data['J6_vel'])),
-                0.0  # 夹爪位置（暂时固定为0）
+                gripper_state  # 夹爪状态：0=打开，1=闭合
             ]
         else:
             # 旧方法：将在episode结束时计算速度
