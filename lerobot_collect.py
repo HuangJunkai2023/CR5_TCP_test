@@ -13,6 +13,7 @@ import pyrealsense2 as rs
 import cv2
 import sys
 import threading
+import shutil
 
 # 添加 CR5 API 路径
 cr5_path = Path(__file__).parent / "files"
@@ -46,7 +47,8 @@ FPS = 10  # 10 Hz 采集频率
 TASK_NAME = "grasp_cube"  # 任务描述
 
 # 夹爪配置
-GRIPPER_PORT = "COM5"  # 夹爪串口号（根据实际情况修改）
+GRIPPER_PORT = "COM5"  # 夹爪串口号（请根据实际情况设置，例如 "COM5"、"COM3" 等）
+                     # 设置为 None 则跳过夹爪初始化
 GRIPPER_THRESHOLD_MM = 50.0  # 夹爪开口阈值（毫米）
 
 # 全局变量
@@ -56,57 +58,101 @@ gripper_lock = threading.Lock()
 keyboard_thread_running = False
 
 # ====================
-# 夹爪控制类
+# 夹爪控制类（异步线程版本）
 # ====================
 
+import queue
+
 class GripperController:
-    """夹爪控制器，支持 Robotiq 2F-85"""
+    """夹爪控制器，支持 Robotiq 2F-85，使用异步线程避免阻塞"""
     
     def __init__(self, port=GRIPPER_PORT):
         global gripper, gripper_state
         self.gripper = None
+        self.command_queue = queue.Queue()
+        self.worker_thread = None
+        self.running = False
         
         if not GRIPPER_AVAILABLE:
             print("⚠️  夹爪模块不可用，将使用模拟状态")
             return
         
+        if port is None:
+            print("ℹ️  夹爪端口未配置（GRIPPER_PORT = None），跳过夹爪初始化")
+            print("    如需使用夹爪，请在代码中设置 GRIPPER_PORT = 'COM端口号'")
+            return
+        
         try:
             print(f"🤖 初始化夹爪 @ {port}...")
             self.gripper = Robotiq2F85(port)
-            self.gripper.activate_gripper()
+            self.gripper.activate()  # 正确的方法名
             time.sleep(1)
             gripper = self.gripper
             gripper_state = 0.0
             print("✅ 夹爪已激活")
+            
+            # 启动工作线程
+            self.running = True
+            self.worker_thread = threading.Thread(target=self._worker, daemon=True)
+            self.worker_thread.start()
+            print("✅ 夹爪异步控制线程已启动")
+            
         except Exception as e:
             print(f"⚠️  夹爪初始化失败: {e}")
             self.gripper = None
     
-    def open(self):
-        """打开夹爪"""
+    def _worker(self):
+        """夹爪控制工作线程"""
         global gripper_state
-        if self.gripper:
+        
+        while self.running:
             try:
-                # 注意：Robotiq API 可能反向，open_gripper 关闭，close_gripper 打开
-                self.gripper.close_gripper(speed=100, force=170)
-                with gripper_lock:
-                    gripper_state = 0.0
-                print("🔓 夹爪打开")
+                # 从队列获取命令，超时 0.1 秒
+                command = self.command_queue.get(timeout=0.1)
+                
+                if command == "OPEN":
+                    try:
+                        # Robotiq 2F-85: close_gripper() 实际上是打开
+                        self.gripper.close_gripper(speed=100, force=170)
+                        with gripper_lock:
+                            gripper_state = 0.0
+                        print("🔓 夹爪打开")
+                    except Exception as e:
+                        print(f"⚠️  打开夹爪失败: {e}")
+                
+                elif command == "CLOSE":
+                    try:
+                        # Robotiq 2F-85: open_gripper() 实际上是关闭
+                        self.gripper.open_gripper(speed=255, force=200, wait=0.1)
+                        with gripper_lock:
+                            gripper_state = 1.0
+                        print("🔒 夹爪关闭")
+                    except Exception as e:
+                        print(f"⚠️  关闭夹爪失败: {e}")
+                
+                elif command == "STOP":
+                    break
+                
+                self.command_queue.task_done()
+                
+            except queue.Empty:
+                continue
             except Exception as e:
-                print(f"⚠️  打开夹爪失败: {e}")
+                print(f"⚠️  夹爪工作线程异常: {e}")
+    
+    def open(self):
+        """打开夹爪（非阻塞）"""
+        if self.gripper and self.running:
+            self.command_queue.put("OPEN")
+        elif not self.gripper:
+            print("⚠️  夹爪未初始化，无法执行打开操作")
     
     def close(self):
-        """关闭夹爪"""
-        global gripper_state
-        if self.gripper:
-            try:
-                # 注意：Robotiq API 可能反向
-                self.gripper.open_gripper(speed=255, force=200, wait=0.1)
-                with gripper_lock:
-                    gripper_state = 1.0
-                print("🔒 夹爪关闭")
-            except Exception as e:
-                print(f"⚠️  关闭夹爪失败: {e}")
+        """关闭夹爪（非阻塞）"""
+        if self.gripper and self.running:
+            self.command_queue.put("CLOSE")
+        elif not self.gripper:
+            print("⚠️  夹爪未初始化，无法执行关闭操作")
     
     def get_state(self):
         """获取当前夹爪状态 (0.0=打开, 1.0=关闭)"""
@@ -115,6 +161,13 @@ class GripperController:
     
     def cleanup(self):
         """清理资源"""
+        if self.worker_thread and self.running:
+            # 停止工作线程
+            self.running = False
+            self.command_queue.put("STOP")
+            self.worker_thread.join(timeout=2)
+            print("✅ 夹爪控制线程已停止")
+        
         if self.gripper:
             try:
                 self.gripper.close()
@@ -170,44 +223,99 @@ def keyboard_listener(gripper_controller):
 class CR5Robot:
     def __init__(self, ip="192.168.5.1"):
         self.ip = ip
-        self.dashboard = DobotApiDashboard(ip, 29999)
-        self.feed = DobotApiFeedBack(ip, 30004)
+        self.dashboard = None
+        self.feed = None
+        self.is_enabled = False  # 跟踪使能状态
         
     def connect(self):
         print(f"🔌 连接 CR5 @ {self.ip}...")
-        self.dashboard.connect()
-        self.feed.connect()
-        self.dashboard.EnableRobot()
+        # DobotApi 构造函数会自动连接 socket
+        self.dashboard = DobotApiDashboard(self.ip, 29999)
+        self.feed = DobotApiFeedBack(self.ip, 30004)
+        
+        # 清除错误
+        print("🧹 清除错误...")
+        self.dashboard.ClearError()
         time.sleep(0.5)
-        self.dashboard.DragTeachSwitch(1)  # 启用拖拽
+        
+        # 使能机器人
+        print("⚡ 使能机器人...")
+        result = self.dashboard.EnableRobot()
+        print(f"   使能结果: {result}")
+        self.is_enabled = True
+        time.sleep(0.5)
+        
+        # 启用拖拽模式
+        print("🤚 启用拖拽模式...")
+        result = self.dashboard.StartDrag()
+        print(f"   拖拽模式: {result}")
         print("✅ 已连接 (拖拽模式)")
         
     def disconnect(self):
-        self.dashboard.DragTeachSwitch(0)
-        self.dashboard.DisableRobot()
-        self.dashboard.close()
-        self.feed.close()
+        """安全断开连接，确保机器人失能"""
+        print("\n🔌 断开 CR5 连接...")
+        
+        # 退出拖拽模式
+        if self.dashboard:
+            try:
+                print("   停止拖拽...")
+                self.dashboard.StopDrag()
+            except Exception as e:
+                print(f"   ⚠️  停止拖拽失败: {e}")
+        
+        # 失能机器人（重要！）
+        if self.dashboard and self.is_enabled:
+            try:
+                print("   失能机器人...")
+                self.dashboard.DisableRobot()
+                self.is_enabled = False
+                print("   ✅ 机器人已失能")
+            except Exception as e:
+                print(f"   ⚠️  失能失败: {e}")
+        
+        # 关闭连接
+        if self.dashboard:
+            try:
+                self.dashboard.close()
+            except Exception as e:
+                print(f"   ⚠️  关闭 dashboard 失败: {e}")
+        
+        if self.feed:
+            try:
+                self.feed.close()
+            except Exception as e:
+                print(f"   ⚠️  关闭 feed 失败: {e}")
+        
+        print("✅ CR5 已断开")
         
     def get_state(self):
         """返回: (joint_positions, joint_velocities, gripper_position)"""
-        feed_data = self.feed.get_feed()
-        if not feed_data:
+        try:
+            feed_data = self.feed.feedBackData()
+            if feed_data is None or len(feed_data) == 0:
+                return None, None, None
+            
+            # 检查数据有效性
+            if hex(feed_data['TestValue'][0]) != '0x123456789abcdef':
+                return None, None, None
+            
+            # 关节位置（弧度）- QActual 是实际关节角度
+            joints_deg = feed_data['QActual'][0]  # (6,) array
+            joint_positions = np.deg2rad(joints_deg).astype(np.float32)
+            
+            # 关节速度（rad/s）- QDActual 是实际关节速度
+            velocities_deg = feed_data['QDActual'][0]  # (6,) array
+            joint_velocities = np.deg2rad(velocities_deg).astype(np.float32)
+            
+            # 夹爪（0=打开, 1=关闭）- 从 DigitalOutputs 获取
+            digital_outputs = feed_data['DigitalOutputs'][0]
+            gripper_closed = digital_outputs & 0x01  # 第一个 DO 位
+            gripper_position = float(gripper_closed)
+            
+            return joint_positions, joint_velocities, gripper_position
+        except Exception as e:
+            print(f"⚠️  获取机械臂状态失败: {e}")
             return None, None, None
-        
-        # 关节位置（弧度）
-        joints_deg = feed_data.get('ActualQd', [0]*6)[:6]
-        joint_positions = np.deg2rad(joints_deg).astype(np.float32)
-        
-        # 关节速度（rad/s）
-        velocities_deg = feed_data.get('ActualQvd', [0]*6)[:6]
-        joint_velocities = np.deg2rad(velocities_deg).astype(np.float32)
-        
-        # 夹爪（0=打开, 1=关闭）
-        do_status = feed_data.get('ActualDO', [0])
-        gripper_closed = do_status[0] if len(do_status) > 0 else 0
-        gripper_position = float(gripper_closed)
-        
-        return joint_positions, joint_velocities, gripper_position
 
 # ====================
 # RealSense 相机
@@ -221,7 +329,7 @@ class RealSenseCamera:
         self.config = config
         
     def start(self):
-        print("📷 启动相机...")
+        print("📷 启动相机（仅 RGB）...")
         self.pipeline.start(self.config)
         for _ in range(30):  # 预热
             self.pipeline.wait_for_frames()
@@ -260,10 +368,13 @@ def record_episode(dataset, robot, camera, gripper_controller, episode_idx, task
     print(f"📹 Episode {episode_idx} - {task_name}")
     print(f"{'='*60}")
     print("   按 's' 开始记录")
-    print("   记录期间: 'O'=打开夹爪, 'C'=关闭夹爪, 'q'=结束")
+    print("   预览模式: 'O'=打开夹爪, 'C'=关闭夹爪")
+    print("   按 'ESC' 或关闭窗口退出程序")
     
     # 预览并等待开始
     cv2.namedWindow('CR5 Data Collection')
+    user_quit = False  # 标记用户是否要退出程序
+    
     while True:
         image_rgb = camera.get_frame()
         if image_rgb is not None:
@@ -271,20 +382,42 @@ def record_episode(dataset, robot, camera, gripper_controller, episode_idx, task
             
             # 显示夹爪状态
             gripper_status = gripper_controller.get_state()
-            gripper_text = "🔒 关闭" if gripper_status > 0.5 else "🔓 打开"
+            gripper_text = "CLOSED" if gripper_status > 0.5 else "OPEN"
+            gripper_color = (0, 0, 255) if gripper_status > 0.5 else (0, 255, 0)
             
-            cv2.putText(display, "Press 's' to START", (10, 30), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-            cv2.putText(display, f"Gripper: {gripper_text}", (10, 60), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+            # 标题和提示信息 - 使用更小的字体
+            cv2.putText(display, "=== PREVIEW MODE ===", (10, 20), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            cv2.putText(display, f"Gripper: {gripper_text}", (10, 40), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, gripper_color, 1)
+            
+            # 键位说明
+            cv2.putText(display, "[S] Start Recording", (10, 65), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 1)
+            cv2.putText(display, "[O] Open Gripper", (10, 85), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
+            cv2.putText(display, "[C] Close Gripper", (10, 105), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
+            cv2.putText(display, "[ESC] Exit Program", (10, 125), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 255), 1)
+            
             cv2.imshow('CR5 Data Collection', display)
         
         key = cv2.waitKey(1) & 0xFF
-        if key == ord('s'):
+        if key == ord('s') or key == ord('S'):
             break
-        elif key == ord('q'):
+        elif key == 27:  # ESC 键
+            user_quit = True
             cv2.destroyAllWindows()
-            return False
+            return False  # 返回 False 表示用户要退出程序
+        elif key == ord('o') or key == ord('O'):
+            gripper_controller.open()
+        elif key == ord('c') or key == ord('C'):
+            gripper_controller.close()
+    
+    # 如果用户选择退出
+    if user_quit:
+        return False
     
     print("🎬 开始记录...")
     
@@ -316,9 +449,9 @@ def record_episode(dataset, robot, camera, gripper_controller, episode_idx, task
         
         # 构建帧数据
         frame_data = {
-            "observation.state": joint_pos,  # (6,) 关节位置
+            "observation.state": joint_pos,  # (6,) float32 关节位置
             "observation.images.top": image_rgb,  # (H, W, 3) RGB
-            "action": np.concatenate([joint_vel, [gripper_state_value]]),  # (7,) 速度+夹爪
+            "action": np.concatenate([joint_vel, [gripper_state_value]]).astype(np.float32),  # (7,) float32 速度+夹爪
         }
         
         # 添加到数据集
@@ -332,18 +465,47 @@ def record_episode(dataset, robot, camera, gripper_controller, episode_idx, task
         elapsed = time.time() - loop_start
         actual_fps = 1.0 / elapsed if elapsed > 0 else 0
         
-        # 夹爪状态显示
-        gripper_text = "🔒 CLOSED" if gripper_state_value > 0.5 else "🔓 OPEN"
+        # 夹爪状态
+        gripper_text = "CLOSED" if gripper_state_value > 0.5 else "OPEN"
         gripper_color = (0, 0, 255) if gripper_state_value > 0.5 else (0, 255, 0)
         
-        cv2.putText(display, f"Frame: {frame_count}", (10, 30), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        cv2.putText(display, f"FPS: {actual_fps:.1f}", (10, 60), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        cv2.putText(display, f"Gripper: {gripper_text}", (10, 90), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, gripper_color, 2)
-        cv2.putText(display, "O=Open | C=Close | Q=Stop", (10, 120), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        # 顶部信息栏 - 深色背景
+        cv2.rectangle(display, (0, 0), (640, 145), (0, 0, 0), -1)
+        cv2.rectangle(display, (0, 0), (640, 145), (100, 100, 100), 1)
+        
+        # 录制状态标题
+        cv2.putText(display, "=== RECORDING ===", (10, 18), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        
+        # 帧计数和 FPS
+        cv2.putText(display, f"Frame: {frame_count:05d}", (10, 38), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+        cv2.putText(display, f"FPS: {actual_fps:.1f}", (150, 38), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+        
+        # 夹爪状态
+        cv2.putText(display, f"Gripper: {gripper_text}", (10, 58), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.45, gripper_color, 1)
+        
+        # 分隔线
+        cv2.line(display, (10, 68), (630, 68), (100, 100, 100), 1)
+        
+        # 键位说明 - 更紧凑
+        cv2.putText(display, "Keys:", (10, 88), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
+        cv2.putText(display, "[O] Open", (60, 88), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+        cv2.putText(display, "[C] Close", (150, 88), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+        cv2.putText(display, "[Q] Finish Episode", (245, 88), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (100, 255, 100), 1)
+        
+        # Episode 信息
+        cv2.putText(display, f"Episode: {episode_idx}", (10, 108), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 200, 100), 1)
+        cv2.putText(display, f"Task: {task_name}", (10, 128), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 200, 100), 1)
+        
         cv2.imshow('CR5 Data Collection', display)
         
         # 检查退出
@@ -374,9 +536,65 @@ def record_episode(dataset, robot, camera, gripper_controller, episode_idx, task
 # 主程序
 # ====================
 
-def main():
+def get_unique_dataset_name(task_name, root_path):
+    """生成唯一的数据集名称"""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    dataset_name = f"cr5_{TASK_NAME}_{timestamp}"
+    dataset_name = f"cr5_{task_name}_{timestamp}"
+    dataset_path = root_path / dataset_name
+    
+    # 如果已存在，添加序号
+    counter = 1
+    while dataset_path.exists():
+        dataset_name = f"cr5_{task_name}_{timestamp}_{counter}"
+        dataset_path = root_path / dataset_name
+        counter += 1
+        
+        # 安全检查，避免无限循环
+        if counter > 100:
+            # 使用毫秒级时间戳
+            timestamp_ms = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            dataset_name = f"cr5_{task_name}_{timestamp_ms}"
+            dataset_path = root_path / dataset_name
+            break
+    
+    return dataset_name
+
+def main():
+    # 设置数据集根目录
+    dataset_root = Path("./lerobot_data")
+    
+    # 如果 lerobot_data 已存在，重命名为备份
+    if dataset_root.exists():
+        backup_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_name = f"lerobot_data_backup_{backup_timestamp}"
+        backup_path = Path(f"./{backup_name}")
+        
+        print("="*60)
+        print("⚠️  检测到 lerobot_data 目录已存在")
+        print("="*60)
+        print(f"   原目录: {dataset_root.absolute()}")
+        print(f"   备份为: {backup_path.absolute()}")
+        
+        try:
+            # 使用 shutil.move 代替 Path.rename，更可靠
+            shutil.move(str(dataset_root), str(backup_path))
+            print("✅ 已重命名为备份目录")
+        except Exception as e:
+            print(f"❌ 重命名失败: {e}")
+            print("   可能原因:")
+            print("   1. 文件夹被其他程序占用（如文件资源管理器、VS Code）")
+            print("   2. 文件夹中有文件被锁定")
+            print("   ")
+            print("   解决方法:")
+            print("   - 关闭所有打开该文件夹的程序")
+            print("   - 或手动删除/重命名 lerobot_data 目录")
+            print("   - 然后重新运行此脚本")
+            raise
+        print("="*60 + "\n")
+    
+    # 生成唯一的数据集名称
+    dataset_name = get_unique_dataset_name(TASK_NAME, dataset_root)
+    dataset_path = dataset_root / dataset_name
     
     print("="*60)
     print("🤖 CR5 LeRobot 官方数据采集")
@@ -427,34 +645,44 @@ def main():
         
         # 创建数据集
         print("\n💾 创建 LeRobot 数据集...")
+        print(f"   数据集名称: {dataset_name}")
+        print(f"   根目录: {dataset_root}")
+        print(f"   完整路径: {dataset_path}")
+        
         dataset = LeRobotDataset.create(
             repo_id=dataset_name,
             fps=FPS,
             features=features,
-            root="./lerobot_data",
+            root=str(dataset_root),
             robot_type="cr5",
             use_videos=True,
+            tolerance_s=0.5,  # 增加时间戳容差，允许更大的采集抖动
         )
-        print(f"✅ 数据集已创建: ./lerobot_data/{dataset_name}")
+        print(f"✅ 数据集已创建")
         
         # 记录 episodes
         episode_idx = 0
         while True:
             success = record_episode(dataset, robot, camera, gripper_controller, episode_idx, TASK_NAME)
             if not success:
+                print("\n⚠️  用户选择退出程序")
                 break
             episode_idx += 1
             
             # 询问是否继续
-            print(f"\n已完成 {episode_idx} 个 episodes")
-            response = input("继续记录下一个 episode? (y/n): ").lower()
+            print(f"\n" + "="*60)
+            print(f"✅ Episode {episode_idx} 已保存！")
+            print(f"📊 当前已完成 {episode_idx} 个 episodes")
+            print("="*60)
+            response = input("\n继续记录下一个 episode? (y/n): ").lower()
             if response != 'y':
+                print("📝 用户选择结束采集")
                 break
         
         # 完成
         print("\n" + "="*60)
         print(f"✅ 采集完成！总共 {episode_idx} 个 episodes")
-        print(f"📂 数据集路径: ./lerobot_data/{dataset_name}")
+        print(f"📂 数据集路径: {dataset_root / dataset_name}")
         print("\n🚀 下一步训练:")
         print(f"    python scripts/train_pytorch.py \\")
         print(f"      --pretrained-checkpoint pi0_droid \\")
@@ -462,22 +690,52 @@ def main():
         print("="*60)
         
     except KeyboardInterrupt:
-        print("\n⚠️  用户中断")
+        print("\n\n" + "="*60)
+        print("⚠️  检测到 Ctrl+C，正在安全退出...")
+        print("="*60)
     except Exception as e:
         print(f"\n❌ 错误: {e}")
         import traceback
         traceback.print_exc()
     finally:
+        print("\n🧹 开始清理资源...")
+        
         # 停止键盘线程
         global keyboard_thread_running
         keyboard_thread_running = False
         if keyboard_thread:
-            keyboard_thread.join(timeout=1)
+            try:
+                keyboard_thread.join(timeout=1)
+                print("   ✅ 键盘监听已停止")
+            except:
+                pass
         
-        # 清理资源
-        camera.stop()
-        robot.disconnect()
-        gripper_controller.cleanup()
+        # 清理相机
+        try:
+            if camera and hasattr(camera, 'pipeline'):
+                camera.stop()
+                print("   ✅ 相机已关闭")
+        except Exception as e:
+            print(f"   ⚠️  关闭相机失败: {e}")
+        
+        # 清理机械臂（最重要！确保失能）
+        try:
+            if robot:
+                robot.disconnect()  # 内部会失能
+        except Exception as e:
+            print(f"   ⚠️  断开机械臂失败: {e}")
+        
+        # 清理夹爪
+        try:
+            if gripper_controller:
+                gripper_controller.cleanup()
+                print("   ✅ 夹爪已关闭")
+        except Exception as e:
+            print(f"   ⚠️  关闭夹爪失败: {e}")
+        
+        print("\n" + "="*60)
+        print("✅ 清理完成，程序已安全退出")
+        print("="*60)
 
 if __name__ == "__main__":
     main()
