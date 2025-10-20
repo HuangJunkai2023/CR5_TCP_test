@@ -334,12 +334,11 @@ def main():
                     feed_data = feedback.feedBackData()
                     
                     if feed_data is not None and len(feed_data) > 0:
-                        current_timestamp = time.time() - start_time
+                        loop_start_time = time.time()  # 记录循环开始时间
+                        current_timestamp = loop_start_time - start_time
                         
                         # 获取关节角度 (QActual)
                         joint_angles = list(feed_data['QActual'][0])
-                        # 获取末端位置 (ToolVectorActual)
-                        tool_position = list(feed_data['ToolVectorActual'][0])
                         # 获取关节速度 (QDActual) - 直接从机器人获取！
                         joint_velocities = list(feed_data['QDActual'][0])
                         
@@ -347,31 +346,26 @@ def main():
                         with gripper_lock:
                             current_gripper_state = gripper_state
                         
-                        # 机器人位置数据
+                        # 机器人位置数据（仅保留训练需要的数据）
                         position_data = {
                             'index': record_count,
                             'timestamp': current_timestamp,
                             'time_str': datetime.now().strftime('%H:%M:%S.%f')[:-3],
+                            # 关节位置
                             'J1': round(joint_angles[0], 3),
                             'J2': round(joint_angles[1], 3),
                             'J3': round(joint_angles[2], 3),
                             'J4': round(joint_angles[3], 3),
                             'J5': round(joint_angles[4], 3),
                             'J6': round(joint_angles[5], 3),
-                            'X': round(tool_position[0], 3),
-                            'Y': round(tool_position[1], 3),
-                            'Z': round(tool_position[2], 3),
-                            'Rx': round(tool_position[3], 3),
-                            'Ry': round(tool_position[4], 3),
-                            'Rz': round(tool_position[5], 3),
-                            # 添加实际关节速度（角度/秒）
+                            # 关节速度
                             'J1_vel': round(joint_velocities[0], 6),
                             'J2_vel': round(joint_velocities[1], 6),
                             'J3_vel': round(joint_velocities[2], 6),
                             'J4_vel': round(joint_velocities[3], 6),
                             'J5_vel': round(joint_velocities[4], 6),
                             'J6_vel': round(joint_velocities[5], 6),
-                            # 添加夹爪状态（0=打开，1=闭合）- 由键盘控制
+                            # 夹爪状态
                             'gripper_state': current_gripper_state
                         }
                         
@@ -431,14 +425,23 @@ def main():
                         vel_norm = sum(abs(v) for v in joint_velocities)
                         moving_status = "🚀" if vel_norm > 0.5 else "⏸️"
                         
+                        # 计算实际帧率
+                        loop_duration = time.time() - loop_start_time
+                        actual_fps = 1.0 / loop_duration if loop_duration > 0 else 0
+                        
                         print(f"记录点 {record_count:3d} {moving_status}: "
                               f"关节[{joint_angles[0]:6.1f}°,{joint_angles[1]:6.1f}°,"\
                               f"{joint_angles[2]:6.1f}°,{joint_angles[3]:6.1f}°,"\
                               f"{joint_angles[4]:6.1f}°,{joint_angles[5]:6.1f}°] "
                               f"速度[{joint_velocities[0]:5.1f}°/s,{joint_velocities[1]:5.1f}°/s] "
+                              f"实际{actual_fps:4.1f}Hz "
                               f"{camera_status}{gripper_status}")
-                    
-                    time.sleep(0.1)  # 每0.1秒记录一次 (10Hz)
+                        
+                        # 精确控制采集频率到 10Hz (0.1秒间隔)
+                        elapsed = time.time() - loop_start_time
+                        sleep_time = max(0, 0.1 - elapsed)  # 目标间隔 0.1秒
+                        if sleep_time > 0:
+                            time.sleep(sleep_time)
                     
                 except Exception as e:
                     # 如果是网络断开错误，直接触发保存并退出

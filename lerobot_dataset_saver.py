@@ -51,17 +51,12 @@ class LeRobotDatasetSaver:
         self.total_frames = 0
         self.current_task = None
         
-        # 标准LeRobot特征定义
+        # 标准LeRobot特征定义（仅保留训练需要的数据）
         self.features = {
             "observation.state": {
                 "dtype": "float32",
                 "shape": (6,),
                 "names": ["J1", "J2", "J3", "J4", "J5", "J6"],
-            },
-            "observation.cartesian_position": {
-                "dtype": "float32", 
-                "shape": (6,),
-                "names": ["X", "Y", "Z", "Rx", "Ry", "Rz"],
             },
             "action": {
                 "dtype": "float32",
@@ -191,9 +186,6 @@ class LeRobotDatasetSaver:
             np.deg2rad(float(robot_data['J6']))
         ]
         
-        observation_cartesian = [float(robot_data['X']), float(robot_data['Y']), float(robot_data['Z']),
-                               float(robot_data['Rx']), float(robot_data['Ry']), float(robot_data['Rz'])]
-        
         # 使用机器人实际速度（如果可用），否则将在episode结束时计算
         if all(key in robot_data for key in ['J1_vel', 'J2_vel', 'J3_vel', 'J4_vel', 'J5_vel', 'J6_vel']):
             # 使用实际速度（需要从角度/秒转换为弧度/秒）
@@ -214,15 +206,15 @@ class LeRobotDatasetSaver:
             action = None
         
         # 准备帧数据（符合LeRobot标准格式）
+        # 帧数据字典
         frame_data = {
             "observation.state": observation_state,
-            "observation.cartesian_position": observation_cartesian,
             "action": action,
             "episode_index": self.current_episode_index,
             "frame_index": frame_index,
-            "timestamp": float(robot_data.get('timestamp', frame_index / self.fps)),
-            "next.done": False,  # 将在episode结束时设置最后一帧为True
-            "index": self.total_frames,
+            "timestamp": float(robot_data['timestamp']),
+            "next.done": False,  # 将在episode结束时更新最后一帧
+            "index": self.total_frames + frame_index,
         }
         
         # 处理视频数据（使用VideoFrame格式）
@@ -536,11 +528,11 @@ class LeRobotDatasetSaver:
             df["index"] = df["index"].astype('int64')
             
             # 确保所有关节角度和速度列都是float32
+            # 构建完整的DataFrame列
             joint_cols = [f"observation.state.{j}" for j in ["J1", "J2", "J3", "J4", "J5", "J6"]]
-            cartesian_cols = [f"observation.cartesian_position.{a}" for a in ["X", "Y", "Z", "Rx", "Ry", "Rz"]]
             action_cols = [f"action.{a}" for a in ["J1_vel", "J2_vel", "J3_vel", "J4_vel", "J5_vel", "J6_vel", "gripper"]]
             
-            for col in joint_cols + cartesian_cols + action_cols:
+            for col in joint_cols + action_cols:
                 if col in df.columns:
                     df[col] = df[col].astype('float32')
             
