@@ -426,6 +426,13 @@ def record_episode(dataset, robot, camera, gripper_controller, episode_idx, task
     
     frame_count = 0
     start_time = time.time()
+    target_period = 1.0 / FPS  # 精确的帧间隔 (0.1秒 for 10Hz)
+    next_frame_time = start_time  # 下一帧的目标时间
+    
+    # 用于计算实际 FPS
+    last_fps_time = start_time
+    fps_frame_count = 0
+    actual_fps = 0.0
     
     while True:
         loop_start = time.time()
@@ -454,24 +461,31 @@ def record_episode(dataset, robot, camera, gripper_controller, episode_idx, task
             "action": np.concatenate([joint_vel, [gripper_state_value]]).astype(np.float32),  # (7,) float32 速度+夹爪
         }
         
-        # 添加到数据集
-        timestamp = time.time() - start_time
+        # 使用相对于 start_time 的精确时间戳
+        current_time = time.time()
+        timestamp = current_time - start_time
         dataset.add_frame(frame_data, task=task_name, timestamp=timestamp)
         
         frame_count += 1
+        fps_frame_count += 1
+        
+        # 每秒更新一次实际 FPS
+        if current_time - last_fps_time >= 1.0:
+            actual_fps = fps_frame_count / (current_time - last_fps_time)
+            fps_frame_count = 0
+            last_fps_time = current_time
         
         # 显示
         display = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
         elapsed = time.time() - loop_start
-        actual_fps = 1.0 / elapsed if elapsed > 0 else 0
         
         # 夹爪状态
         gripper_text = "CLOSED" if gripper_state_value > 0.5 else "OPEN"
         gripper_color = (0, 0, 255) if gripper_state_value > 0.5 else (0, 255, 0)
         
         # 顶部信息栏 - 深色背景
-        cv2.rectangle(display, (0, 0), (640, 145), (0, 0, 0), -1)
-        cv2.rectangle(display, (0, 0), (640, 145), (100, 100, 100), 1)
+        cv2.rectangle(display, (0, 0), (640, 165), (0, 0, 0), -1)
+        cv2.rectangle(display, (0, 0), (640, 165), (100, 100, 100), 1)
         
         # 录制状态标题
         cv2.putText(display, "=== RECORDING ===", (10, 18), 
@@ -480,30 +494,40 @@ def record_episode(dataset, robot, camera, gripper_controller, episode_idx, task
         # 帧计数和 FPS
         cv2.putText(display, f"Frame: {frame_count:05d}", (10, 38), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
-        cv2.putText(display, f"FPS: {actual_fps:.1f}", (150, 38), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+        
+        # 显示实际 FPS,颜色根据精度变化
+        fps_diff = abs(actual_fps - FPS)
+        if fps_diff < 0.5:
+            fps_color = (0, 255, 0)  # 绿色 - 精确
+        elif fps_diff < 1.0:
+            fps_color = (0, 255, 255)  # 黄色 - 可接受
+        else:
+            fps_color = (0, 0, 255)  # 红色 - 偏差大
+        
+        cv2.putText(display, f"FPS: {actual_fps:.2f}/{FPS}", (10, 58), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.45, fps_color, 1)
         
         # 夹爪状态
-        cv2.putText(display, f"Gripper: {gripper_text}", (10, 58), 
+        cv2.putText(display, f"Gripper: {gripper_text}", (10, 78), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, gripper_color, 1)
         
         # 分隔线
-        cv2.line(display, (10, 68), (630, 68), (100, 100, 100), 1)
+        cv2.line(display, (10, 88), (630, 88), (100, 100, 100), 1)
         
         # 键位说明 - 更紧凑
-        cv2.putText(display, "Keys:", (10, 88), 
+        cv2.putText(display, "Keys:", (10, 108), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
-        cv2.putText(display, "[O] Open", (60, 88), 
+        cv2.putText(display, "[O] Open", (60, 108), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
-        cv2.putText(display, "[C] Close", (150, 88), 
+        cv2.putText(display, "[C] Close", (150, 108), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
-        cv2.putText(display, "[Q] Finish Episode", (245, 88), 
+        cv2.putText(display, "[Q] Finish Episode", (245, 108), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (100, 255, 100), 1)
         
         # Episode 信息
-        cv2.putText(display, f"Episode: {episode_idx}", (10, 108), 
+        cv2.putText(display, f"Episode: {episode_idx}", (10, 128), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 200, 100), 1)
-        cv2.putText(display, f"Task: {task_name}", (10, 128), 
+        cv2.putText(display, f"Task: {task_name}", (10, 148), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 200, 100), 1)
         
         cv2.imshow('CR5 Data Collection', display)
@@ -517,11 +541,21 @@ def record_episode(dataset, robot, camera, gripper_controller, episode_idx, task
         elif key == ord('c') or key == ord('C'):
             gripper_controller.close()
         
-        # 精确 10Hz
-        elapsed = time.time() - loop_start
-        sleep_time = max(0, 1.0/FPS - elapsed)
+        # 计算下一帧的目标时间
+        next_frame_time += target_period
+        
+        # 精确睡眠到下一帧时间
+        current_time = time.time()
+        sleep_time = next_frame_time - current_time
+        
         if sleep_time > 0:
             time.sleep(sleep_time)
+        else:
+            # 如果已经落后,输出警告但继续
+            if sleep_time < -0.01:  # 落后超过 10ms
+                print(f"⚠️  警告: 帧 {frame_count} 落后 {-sleep_time*1000:.1f}ms")
+            # 重新同步到当前时间
+            next_frame_time = time.time() + target_period
     
     cv2.destroyAllWindows()
     
