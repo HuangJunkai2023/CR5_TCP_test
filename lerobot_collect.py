@@ -47,8 +47,8 @@ FPS = 10  # 10 Hz 采集频率
 TASK_NAME = "put the flash drive on the book"  # 任务描述
 
 # 夹爪配置
-GRIPPER_PORT = "COM5"  # 夹爪串口号（请根据实际情况设置，例如 "COM5"、"COM3" 等）
-                     # 设置为 None 则跳过夹爪初始化
+GRIPPER_PORT = "/dev/ttyUSB0"  # 夹爪串口号（Ubuntu 系统常见: /dev/ttyUSB0, /dev/ttyACM0）
+                                # 设置为 None 则跳过夹爪初始化
 GRIPPER_THRESHOLD_MM = 50.0  # 夹爪开口阈值（毫米）
 
 # 全局变量
