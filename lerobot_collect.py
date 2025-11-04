@@ -44,10 +44,10 @@ ROBOT_IP = "192.168.5.1"
 CAMERA_WIDTH = 640
 CAMERA_HEIGHT = 480
 FPS = 10  # 10 Hz 采集频率
-TASK_NAME = "put the flash drive on the book"  # 任务描述
+TASK_NAME = "put the banana on the plate"  # 任务描述
 
 # 夹爪配置
-GRIPPER_PORT = "/dev/ttyUSB0"  # 夹爪串口号（Ubuntu 系统常见: /dev/ttyUSB0, /dev/ttyACM0）
+GRIPPER_PORT = "COM5"  # 夹爪串口号（Ubuntu 系统常见: /dev/ttyUSB0, /dev/ttyACM0）
                                 # 设置为 None 则跳过夹爪初始化
 GRIPPER_THRESHOLD_MM = 50.0  # 夹爪开口阈值（毫米）
 
@@ -113,7 +113,7 @@ class GripperController:
                 if command == "OPEN":
                     try:
                         # Robotiq 2F-85: close_gripper() 实际上是打开
-                        self.gripper.close_gripper(speed=100, force=170)
+                        self.gripper.close_gripper(speed=20, force=170)
                         with gripper_lock:
                             gripper_state = 0.0
                         print("🔓 夹爪打开")
@@ -123,7 +123,7 @@ class GripperController:
                 elif command == "CLOSE":
                     try:
                         # Robotiq 2F-85: open_gripper() 实际上是关闭
-                        self.gripper.open_gripper(speed=255, force=200, wait=0.1)
+                        self.gripper.open_gripper(speed=255, force=200, wait=1.5)
                         with gripper_lock:
                             gripper_state = 1.0
                         print("🔒 夹爪关闭")
